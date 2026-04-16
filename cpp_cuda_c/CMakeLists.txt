@@ -33,6 +33,9 @@ if(CMAKE_CUDA_COMPILER AND NOT CUDA_DISABLED)
    add_library(spline_psf_cu_impl STATIC src/spline_psf_gpu.cu)
    target_include_directories(spline_psf_cu_impl PUBLIC include)
    target_compile_features(spline_psf_cu_impl PUBLIC cxx_std_11)
+   # CUDA_SEPARABLE_COMPILATION ON is REQUIRED here: spline_psf_gpu.cu uses
+   # dynamic parallelism (kernels launched from device code in fAt3DVolumeROI
+   # and kernel_derivative_ROI), which only works in separable mode.
    set_target_properties(
       spline_psf_cu_impl
       PROPERTIES CUDA_SEPARABLE_COMPILATION ON
@@ -45,7 +48,21 @@ if(CMAKE_CUDA_COMPILER AND NOT CUDA_DISABLED)
    link_directories(${CUDA_TOOLKIT_ROOT_DIR}/lib64)
    include_directories("${CUDA_INCLUDE_DIRS}")
 
-   pybind11_add_module(spline src/pybind_spline.cpp)
+   # PRISM fix: NO_EXTRAS disables pybind11's automatic -flto=auto, which
+   # otherwise makes the final .so lose its local `fatbinData@Base` symbol
+   # and fail to dlopen with `undefined symbol: fatbinData`. The LTO flag
+   # is not overridable via INTERPROCEDURAL_OPTIMIZATION because pybind11
+   # adds it through its own interface library (pybind11::thin_lto).
+   pybind11_add_module(spline NO_EXTRAS src/pybind_spline.cpp)
+
+   # PRISM fix: the pybind module links against a CUDA static library with
+   # CUDA_SEPARABLE_COMPILATION ON. These settings force the device-link step
+   # on this target and make nvcc the final linker so libcudart/libcudadevrt
+   # get pulled in automatically.
+   set_target_properties(spline PROPERTIES
+      LINKER_LANGUAGE CUDA
+      CUDA_RESOLVE_DEVICE_SYMBOLS ON
+      )
    target_link_libraries(spline PRIVATE spline_psf_cu_impl spline_psf_cpu_impl)
 
 else()  # NO CUDA
