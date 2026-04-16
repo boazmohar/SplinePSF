@@ -1,14 +1,12 @@
 # SplinePSF — PRISM / Janelia HPC Fixes
 
 This fork of [Haydnspass/SplinePSF](https://github.com/Haydnspass/SplinePSF)
-adds one Janelia HPC compatibility fix for the CUDA build on top of the
-upstream `master` branch.
+adds Janelia HPC compatibility fixes for the CUDA build on top of the
+upstream `master` branch. All fixes live in `cpp_cuda_c/CMakeLists.txt`.
 
-## Fix Applied (branch `janelia-hpc-fixes`)
+## Fixes Applied (branch `janelia-hpc-fixes`)
 
-### CUDA Library Path: Hardcoded → Variable
-
-**File:** `cpp_cuda_c/CMakeLists.txt`
+### Fix A — CUDA Library Path: Hardcoded → Variable
 
 **Problem:** Without this fix, CMake links against `/usr/local/cuda/lib64`,
 which on Janelia HPC is a symlink to the system default CUDA (e.g. 12.9).
@@ -24,6 +22,48 @@ nvlink fatal : Input file '...' newer than toolkit (129 vs 121) (target: sm_50)
 right after the `set_target_properties(...)` block. This uses the CUDA
 version detected by CMake's `find_package(CUDA)` instead of the system
 symlink.
+
+### Fix B — `undefined symbol: fatbinData` at import
+
+**Problem:** After Fix A, the build succeeds but `import spline` crashes with:
+
+```
+ImportError: .../spline.cpython-311-x86_64-linux-gnu.so: undefined symbol: fatbinData
+```
+
+**Root cause:** The pybind module (`spline`) is a pure-C++ target that links
+against the CUDA static library `spline_psf_cu_impl` built with
+`CUDA_SEPARABLE_COMPILATION ON` (required — `spline_psf_gpu.cu` uses dynamic
+parallelism: kernels launch kernels from device code). Three things conspired:
+
+1. CMake generates a device-link step (`cmake_device_link.o`) that references
+   `fatbinData@Base` as a dynamic relocation — it must resolve from a
+   global `fatbinData` symbol inside the same `.so`.
+2. The final link used `g++`, not `nvcc`, so `libcudart`/`libcudadevrt`
+   weren't pulled in automatically.
+3. `pybind11_add_module` silently added `-flto=auto` (thin LTO). LTO
+   reduced the local `fatbinData` in `spline_psf_gpu.cu.o` to file-scope
+   and stripped it from the `.so`'s dynamic symbol table, making the
+   relocation unresolvable at `dlopen()`.
+
+**Fix:** Three changes to the pybind target:
+
+```cmake
+pybind11_add_module(spline NO_EXTRAS src/pybind_spline.cpp)
+
+set_target_properties(spline PROPERTIES
+    LINKER_LANGUAGE CUDA
+    CUDA_RESOLVE_DEVICE_SYMBOLS ON
+    )
+```
+
+- `NO_EXTRAS` disables pybind11's automatic LTO (not overridable via
+  `INTERPROCEDURAL_OPTIMIZATION` because pybind11 applies LTO through its
+  own interface library, `pybind11::thin_lto`).
+- `LINKER_LANGUAGE CUDA` makes nvcc the final linker, so it handles device
+  linking and pulls in `libcudart`/`libcudadevrt` automatically.
+- `CUDA_RESOLVE_DEVICE_SYMBOLS ON` forces the device-link step on this
+  target even though it has no direct `.cu` sources.
 
 ## History of Fixes (superseded)
 
