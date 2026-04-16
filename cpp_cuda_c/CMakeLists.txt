@@ -39,6 +39,12 @@ if(CMAKE_CUDA_COMPILER AND NOT CUDA_DISABLED)
       POSITION_INDEPENDENT_CODE ON
       )
 
+   # PRISM/Janelia HPC fix: use the CUDA version CMake detected (matches PyTorch),
+   # not the /usr/local/cuda symlink which may point to a newer toolkit and cause
+   # "nvlink fatal: Input file ... newer than toolkit" errors.
+   link_directories(${CUDA_TOOLKIT_ROOT_DIR}/lib64)
+   include_directories("${CUDA_INCLUDE_DIRS}")
+
    pybind11_add_module(spline src/pybind_spline.cpp)
    target_link_libraries(spline PRIVATE spline_psf_cu_impl spline_psf_cpu_impl)
 
